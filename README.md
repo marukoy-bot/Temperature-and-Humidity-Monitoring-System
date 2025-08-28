@@ -7,7 +7,7 @@ Temperature and Humidity Monitoring System using:
 - 5v relay to turn on 12v pump
 - 2 DHT11 modules to gather temperature and humidity data for both indoor and outdoor.
 
-#Functionality
+# Functionality
 
  - Sends SMS alerts when tempreature reaches 30°C or water level is below 20%. Sending SMS cooldown is 2 mins.
  - Manual override of relay (sprinkler) functions using SMS keywords:
