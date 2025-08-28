@@ -20,11 +20,13 @@
 #define o_trig_hmdty 60   //60%
 #define water_lvl_trig 100 
 
-#define scroll_delay 10
+#define scroll_delay 500
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+
 DHT11 o_dht11(2);
 DHT11 i_dht11(6);
+
 SoftwareSerial gsm(RX, TX);
 
 void setup() {
@@ -51,10 +53,9 @@ int display_mode = 0; //default
 int i_temp = 0, i_hmdty = 0;
 int o_temp = 0, o_hmdty = 0;
 
-unsigned long pump_timer = 0;
-bool is_pump_active = false;
-//const unsigned long timerDuration = 180000;
-const unsigned long pump_timer_dur = 10000;
+unsigned long sprinkler_timer = 0;
+bool is_sprinkler_active = false;
+const unsigned long sprinkler_timer_dur = 5000;
 
 int i_res, o_res;
 long duration_us;
@@ -63,36 +64,21 @@ int distance_us;
 unsigned long current_time = 0, last_time = 0, mode_timer_duration = 5000;
 float water_lvl;
 
+bool isSMSCooldown = false;
+
+const unsigned long smsCooldown = 120000; // 5 min in ms
+
+bool SYSTEM_PAUSE = false;
+bool manualOverride = false;
+
 void loop() {
     current_time = millis();
 
-    CheckSMS();
-    
-    i_res = i_dht11.readTemperatureHumidity(i_temp, i_hmdty);
-    o_res = o_dht11.readTemperatureHumidity(o_temp, o_hmdty);
-    water_lvl = map(GetDistance(), 20, 100, 100, 0); //assuming 100cm deep 
+    CheckSMS();    
 
-    //check outdoor temperature
-    // if ( (o_temp >= o_trig_temp || o_hmdty >= o_trig_hmdty) && !is_pump_active )
-    // {
-    //     is_pump_active = true;
-    //     pump_timer = current_time;
-    //     digitalWrite(relay, LOW);   //turn on relay         
-    //     //OnTempSMS(num);
-    // }    
+    UpdateSensors();
 
-    //check water level
-
-    //activate pump, timer
-    // if (is_pump_active)
-    // {
-    //     displayMode = 2;
-    //     DisplayTimer();
-    // }
-    // else
-    // {
-        
-    // }
+    CheckSensorValues();
 
     if (current_time - last_time > mode_timer_duration) //cycle though display modes
     {
@@ -102,50 +88,114 @@ void loop() {
         last_time = current_time;
     }
 
-    //cycle between display modes
-    switch(display_mode)
+    if (!SYSTEM_PAUSE)
     {
-        case 0:
-            DisplayTemperatureAndHumidity(0);
-        break;
-        case 1:
-            DisplayTemperatureAndHumidity(1);
-        break;
-        case 2:
-            DisplayWaterLevel();
-        break;
-        case 3:
-            DisplayTimer();
-        break;
-    }   
+        switch(display_mode)
+        {
+            case 0:
+                DisplayTemperatureAndHumidity(0);
+            break;
+            case 1:
+                DisplayTemperatureAndHumidity(1);
+            break;
+            case 2:        
+                DisplayWaterLevel();
+            break;
+        }   
+    }    
 }
 
-void DisplayTimer()
+unsigned long cooldownTimer = 0, cooldownTimerDuration = 120000;
+void CheckSensorValues()
 {
-    // if (isPumpActive)
-    // {
-    //     unsigned long elapsed = globalCurrentTimer - pumpTimer;
+    if (o_temp >= 30)
+    {
+        if (!isSMSCooldown)
+        {
+            isSMSCooldown = true;
+            cooldownTimer = millis();
+            ToggleSprinkler(true);
 
-    //     if (elapsed >= globalTimerDuration)
-    //     {
-    //         isPumpActive = false;
-    //         digitalWrite(relay, HIGH);
+            String msg =
+                "[VAPOR SYSTEM ALERT]\n\nRoof: "   + String(o_temp)   + " C | " + String(o_hmdty) + "% RH\n" +
+                "Indoor: " + String(i_temp)   + " C | " + String(i_hmdty) + "% RH\n" +
+                "Water Level: "  + String((int)water_lvl) + "%\n" +
+                "Status: SPRINKLER "   + String(is_sprinkler_active ? "ON" : "OFF");
 
-    //         lcd.clear();
-    //         displayMode = 0;
-    //     }
-    //     else
-    //     {
-    //         unsigned long remaining = (pumpTimerDuration - elapsed) / 1000; //seconds left
-    //         lcd.clear();
-    //         lcd.setCursor(0, 0);
-    //         lcd.print("Pump active for");
+            SendSMS(num, msg);
+            Serial.println("Message Sent");
+        }
+    }
+    else if (o_temp < 29 && !manualOverride)
+    {
+        ToggleSprinkler(false);
+    }
 
-    //         lcd.setCursor(0, 1);
-    //         lcd.print(remaining);
-    //         lcd.print("s");
-    //     }
-    // }
+    if (water_lvl <= 18)
+    {
+        if (!isSMSCooldown)
+        {
+            isSMSCooldown = true;
+            cooldownTimer = millis();
+
+            String msg = "[WATER TANK STATUS]\n\nWater level is LOW (" + String(water_lvl) + "%). Please refill soon.";
+            SendSMS(num, msg);
+        }
+        Serial.println("Water level LOW");
+    }
+    else if (water_lvl > 20)
+    {
+        Serial.println("Water level NORMAL");
+    }
+
+    if (isSMSCooldown)
+    {
+        unsigned long elapsed = millis() - cooldownTimer;
+        if (elapsed >= cooldownTimerDuration)
+        {
+            isSMSCooldown = false;
+        }
+        else
+        {
+            unsigned long timeLeft = (cooldownTimerDuration - elapsed) / 1000;
+            Serial.println("SMS Cooldown: " + String(timeLeft));
+        }
+    }    
+}
+
+unsigned long lastTime = 0, updateDuration = 1000;
+void UpdateSensors()
+{
+    if (millis() - lastTime >= updateDuration)
+    {
+        lastTime = millis();
+
+        i_res = i_dht11.readTemperatureHumidity(i_temp, i_hmdty);
+        o_res = o_dht11.readTemperatureHumidity(o_temp, o_hmdty);
+
+        water_lvl = map(GetDistance(), 20, 100, 100, 0); //assuming 100cm deep 
+    }    
+}
+
+String toUCS2(String text) {
+    String out = "";
+    for (int i = 0; i < text.length(); i++) {
+        char c = text[i];
+        char buf[5];
+        sprintf(buf, "%04X", (unsigned char)c); // UCS2 hex
+        out += buf;
+    }
+    return out;
+}
+
+String decodeUCS2(String hex) {
+    String result = "";
+    for (int i = 0; i < hex.length(); i += 4) {
+        String part = hex.substring(i, i + 4);
+        char c = (char) strtol(part.c_str(), NULL, 16);
+        result += c;
+    }
+    return result;
 }
 
 void InitializeGSM()
@@ -153,98 +203,61 @@ void InitializeGSM()
     gsm.begin(9600);
 
     gsm.println("AT");
-    updateGSM();
     delay(500);
+    UpdateGSM();
 
-    gsm.println("AT+CLTS=1");
-    updateGSM();
+    gsm.println("AT+CSCS=\"GSM\"");
     delay(500);
-    
-    gsm.println("AT&W");
-    updateGSM();
-    delay(500);
+    UpdateGSM(); 
 
-    gsm.println("AT+CMGF=1"); //text mode
-    updateGSM();
+    gsm.println("AT+CNMI=1,2,0,0,0");
     delay(500);
+    UpdateGSM(); 
 
-    gsm.println("AT+CNMI=1,2,0,0,0"); //push SMS
-    updateGSM();
+    gsm.println("AT+CMGF=1");
     delay(500);
+    UpdateGSM(); 
 
-    Serial.print("Initialized: ");
-    Serial.println(formatTime(getTime()));
+    DeleteSMS();
+    Serial.println("Initialized");
 }
 
-void DisplayTemperatureAndHumidity(int setting)
-{
-    switch (setting)
+
+void DisplayTemperatureAndHumidity(int setting) // 1 = indoor; 0 = roof
+{    
+    if (i_res == 0 || o_res == 0) 
     {
-        case 0:
-            if (i_res == 0) 
-            {
-                //print on serial monitor
-                Serial.print("In temp: ");
-                Serial.print(i_temp);
-                Serial.print(" °C\tIndoor Humidity: ");
-                Serial.print(i_hmdty);
-                Serial.println(" %");
+        //print on serial monitor
+        Serial.print(setting ? "Indoor: " : "Roof: ");
+        Serial.print(setting ? i_temp : o_temp);
+        Serial.print(" °C | ");
+        Serial.print(setting ? i_hmdty : o_hmdty);
+        Serial.println("% RH");
 
-                //print on LCD
-                String i_temp_msg = "Room Temp: " + String(i_temp) + (char)223 + "C";
-                lcd.setCursor(0, 0);
-                lcd.print(i_temp_msg);
-
-                String i_hmdty_msg = "Room Hmdty: " + String(i_hmdty) +  "%";
-                lcd.setCursor(0, 1);
-                lcd.print(i_hmdty_msg);
-            } 
-            else 
-            {
-                //print error message based on the error code.
-                lcd.print(DHT11::getErrorString(i_res));
-            }
-        break;
-
-        case 1:
-            if (o_res == 0) 
-            {
-                //print on serial monitor
-                Serial.print("Outdoor Temperature: ");
-                Serial.print(o_temp);
-                Serial.print(" °C\tOutdoor Humidity: ");
-                Serial.print(o_hmdty);
-                Serial.println(" %");
-
-                //print on LCD
-                String o_temp_msg = "Roof Temp: " + String(o_temp) + (char)223 + "C";
-                lcd.setCursor(0, 0);
-                lcd.print(o_temp_msg);
-
-                String o_hmdty_msg = "Roof Hmdty: " + String(o_hmdty) + "%";
-                lcd.setCursor(0, 1);
-                lcd.print(o_hmdty_msg);
-            } 
-            else 
-            {
-                //print error message based on the error code.
-                lcd.print(DHT11::getErrorString(o_res));
-            }
-        break;
-    }
-    
+        //print on LCD
+        lcd.setCursor(0, 0);
+        lcd.print(setting ? "Indoor: " : "Roof: ");
+        
+        lcd.setCursor(0, 1);
+        lcd.print(String(setting ? i_temp : o_temp) + (char)223 + "C | " + String(setting ? i_hmdty : o_hmdty) + "% RH");
+    } 
+    else 
+    {
+        //print error message based on the error code.
+        lcd.print(DHT11::getErrorString(i_res));
+    }    
 }
 
 void DisplayWaterLevel()
 {
     lcd.setCursor(0, 0);
-    lcd.print(GetDistance());
-    lcd.print(" cm");
+    lcd.print("Water Level:   "); // add spaces to clear old chars
 
     lcd.setCursor(0, 1);
-    lcd.print("Water lvl: ");
     lcd.print((int)water_lvl);
-    lcd.print("%");
+    lcd.print("%   "); // spaces to overwrite old digits
+
+    Serial.println("Water Level: " + (String)water_lvl + "%");
 }
 
 float GetDistance()
@@ -262,72 +275,26 @@ float GetDistance()
     return duration_us * 0.034 / 2;
 }
 
-void SendSMS(String number)
-{   
-    String dateTime = GetDateTime();
-    updateGSM();
-    Serial.println(dateTime);
+void SendSMS(String number, String message)
+{
+    gsm.println("AT+CMGF=1");
+    UpdateGSM();
+    delay(1000);
 
-    if (time != "")
-    {
-        gsm.println("AT+CMGF=1");
-        updateGSM();
-        delay(500);
+    gsm.println("AT+CMGS=\"" + number + "\"");
+    UpdateGSM();
+    delay(1000);    
 
-        gsm.print("AT+CMGS=\"");
-        gsm.print(number);
-        gsm.println("\"");
-        updateGSM();
-        delay(500);
-
-        gsm.print(FormatTime(dateTime));
-        gsm.print(". Trigger temp. reached: ");
-        gsm.print(i_temp);
-        gsm.print("°C");
-        gsm.print(", Hmdty : ");
-        gsm.print(humidity);
-        gsm.print("%. Pump active.");
-        gsm.print((char)26);
-        updateGSM();
-    }   
+    gsm.print(message);
+    gsm.print(char(26));
+    UpdateGSM();
+    delay(1000);
 }
 
-void WaterLowSMS(String number, float waterLevel)
+void UpdateGSM()
 {
-    String time = getTime();
-    updateGSM();
-    Serial.println(time);
-
-    if (time != "")
-    {
-        gsm.println("AT+CMGF=1");
-        updateGSM();
-        delay(500);
-
-        // gsm.println("AT+CMGS=\"+639151635499\"");
-        // updateGSM();
-        // delay(500);
-
-        gsm.print("AT+CMGS=\"");
-        gsm.print(number);
-        gsm.println("\"");
-        updateGSM();
-        delay(500);
-
-        gsm.print(formatTime(time));
-        gsm.print(" Water level Low: ");
-        gsm.print(waterLevel);
-        gsm.print("%. Please refill water container.");
-        gsm.print((char)26);
-        updateGSM();
-    }  
-}
-
-void updateGSM()
-{
-    delay(500);
-    while(gsm.available()) Serial.write((char)gsm.read());
     while(Serial.available()) gsm.write(Serial.read());
+    while(gsm.available()) Serial.write((char)gsm.read());
 }
 
 String GetDateTime()
@@ -337,7 +304,9 @@ String GetDateTime()
     delay(500);
 
     while(gsm.available()) dateTime += (char)gsm.read();
-    return dateTime.trim();
+    dateTime.trim();
+
+    return dateTime;
 }
 
 String FormatTime(String cclk)
@@ -363,35 +332,68 @@ String FormatTime(String cclk)
     return String(buf);
 }
 
+void ToggleSprinkler(bool state)
+{
+    is_sprinkler_active = state;
+    digitalWrite(relay, !is_sprinkler_active);
+}
+
+void DeleteSMS(){
+    String Comm;
+    Comm = "AT+CMGDA=";
+    Comm += "\x22";
+    Comm += "DEL ALL";
+    Comm += "\x22";
+    gsm.println(Comm);
+
+    String CommRep = gsm.readString();
+    Serial.print("Reply: "), Serial.println(CommRep);
+}
+
 void CheckSMS()
 {
     static String smsBuffer = "";
+    static bool waitingForMsg = false;
 
-    while (gsm.available())
+    if (gsm.available())
     {
-        char c = gsm.read();
-        smsBuffer += c;
+        String smsBuffer = gsm.readString();        
+        //smsBuffer = decodeUCS2(smsBuffer);
+        smsBuffer.toUpperCase();
+        Serial.print(smsBuffer);
+        delay(2000); 
 
-        if ( c == '\n' )
+        if (smsBuffer.indexOf("VAPOR ON") > -1)
         {
-            Serial.println(smsBuffer);
-
-            String upperMsg = smsBuffer;
-            upperMsg.toUpperCase();            
-
-            if (upperMsg.indexOf("ON") != -1)
-            {
-                lcd.clear();
-                lcd.setCursor(0, 0);
-                lcd.print("pump: ON");
-                delay(5000);
-            }
-            else if (upperMsg.indexOf("OFF") != -1)
-            {
-                //off pump
-            }
-
-            smsBuffer = "";
+            manualOverride = true;  // force ON
+            ToggleSprinkler(true);
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("SPRINKLER: ON");
         }
+        else if (smsBuffer.indexOf("VAPOR OFF") > -1 )
+        {
+            manualOverride = false; // release override
+            ToggleSprinkler(false);
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("SPRINKLER: OFF");
+        }
+        else if (smsBuffer.indexOf("VAPOR STATUS") > -1)
+        {
+            SYSTEM_PAUSE = true;
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("Sending Status ");            
+
+            String msg =
+                "[VAPOR SYSTEM ALERT]\n\nRoof: "   + String(o_temp)   + " C | " + String(o_hmdty) + "% RH\n" +
+                "Indoor: " + String(i_temp)   + " C | " + String(i_hmdty) + "% RH\n" +
+                "Water Level: "  + String((int)water_lvl) + "%\n" +
+                "Status: SPRINKLER "   + String(is_sprinkler_active ? "ON" : "OFF");
+
+            SendSMS(num, msg);
+            SYSTEM_PAUSE = false;
+        }            
     }
 }
