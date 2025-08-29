@@ -41,7 +41,8 @@ void setup() {
     Serial.begin(9600);
 
     pinMode(trig, OUTPUT);
-    pinMode(echo, INPUT);
+    pinMode(echo, INPUT_PULLUP);
+    digitalWrite(echo, HIGH);
     pinMode(relay, OUTPUT);
     digitalWrite(relay, HIGH);
 
@@ -80,16 +81,16 @@ void loop() {
 
     CheckSensorValues();
 
-    if (current_time - last_time > mode_timer_duration) //cycle though display modes
-    {
-        lcd.clear();
-        display_mode++;
-        if (display_mode > 2) display_mode = 0;
-        last_time = current_time;
-    }
-
     if (!SYSTEM_PAUSE)
     {
+        if (current_time - last_time > mode_timer_duration) //cycle though display modes
+        {
+            lcd.clear();
+            display_mode++;
+            if (display_mode > 2) display_mode = 0;
+            last_time = current_time;
+        }
+
         switch(display_mode)
         {
             case 0:
@@ -103,6 +104,7 @@ void loop() {
             break;
         }   
     }    
+    else {}
 }
 
 unsigned long cooldownTimer = 0, cooldownTimerDuration = 120000;
@@ -112,6 +114,7 @@ void CheckSensorValues()
     {
         if (!isSMSCooldown)
         {
+            SYSTEM_PAUSE = true;
             isSMSCooldown = true;
             cooldownTimer = millis();
             ToggleSprinkler(true);
@@ -124,6 +127,7 @@ void CheckSensorValues()
 
             SendSMS(num, msg);
             Serial.println("Message Sent");
+            SYSTEM_PAUSE = false;
         }
     }
     else if (o_temp < 29 && !manualOverride)
@@ -131,21 +135,18 @@ void CheckSensorValues()
         ToggleSprinkler(false);
     }
 
-    if (water_lvl <= 18)
+    if (water_lvl >= 25)
     {
         if (!isSMSCooldown)
         {
+            SYSTEM_PAUSE = true;
             isSMSCooldown = true;
             cooldownTimer = millis();
 
             String msg = "[WATER TANK STATUS]\n\nWater level is LOW (" + String(water_lvl) + "%). Please refill soon.";
             SendSMS(num, msg);
+            SYSTEM_PAUSE = false;
         }
-        Serial.println("Water level LOW");
-    }
-    else if (water_lvl > 20)
-    {
-        Serial.println("Water level NORMAL");
     }
 
     if (isSMSCooldown)
@@ -173,7 +174,7 @@ void UpdateSensors()
         i_res = i_dht11.readTemperatureHumidity(i_temp, i_hmdty);
         o_res = o_dht11.readTemperatureHumidity(o_temp, o_hmdty);
 
-        water_lvl = map(GetDistance(), 20, 100, 100, 0); //assuming 100cm deep 
+        water_lvl = GetDistance(); 
     }    
 }
 
@@ -181,8 +182,16 @@ String toUCS2(String text) {
     String out = "";
     for (int i = 0; i < text.length(); i++) {
         char c = text[i];
+        unsigned int code;
+
+        if ((unsigned char)c == 0xB0) {
+            code = 0x00B0;  // degree symbol
+        } else {
+            code = (unsigned char)c;  // normal ASCII
+        }
+
         char buf[5];
-        sprintf(buf, "%04X", (unsigned char)c); // UCS2 hex
+        sprintf(buf, "%04X", code);
         out += buf;
     }
     return out;
@@ -255,9 +264,9 @@ void DisplayWaterLevel()
 
     lcd.setCursor(0, 1);
     lcd.print((int)water_lvl);
-    lcd.print("%   "); // spaces to overwrite old digits
+    lcd.print("cm   "); // spaces to overwrite old digits
 
-    Serial.println("Water Level: " + (String)water_lvl + "%");
+    Serial.println("Water Level: " + (String)water_lvl + "cm");
 }
 
 float GetDistance()
@@ -270,16 +279,18 @@ float GetDistance()
 
     digitalWrite(trig, LOW);
 
-    duration_us = pulseIn(echo, HIGH);
+    duration_us = pulseIn(echo, HIGH);                                                       
 
     return duration_us * 0.034 / 2;
 }
 
 void SendSMS(String number, String message)
 {
+    SYSTEM_PAUSE = true;
+
     gsm.println("AT+CMGF=1");
     UpdateGSM();
-    delay(1000);
+    delay(250);
 
     gsm.println("AT+CMGS=\"" + number + "\"");
     UpdateGSM();
@@ -289,11 +300,13 @@ void SendSMS(String number, String message)
     gsm.print(char(26));
     UpdateGSM();
     delay(1000);
+
+    SYSTEM_PAUSE = false;
 }
 
 void UpdateGSM()
 {
-    while(Serial.available()) gsm.write(Serial.read());
+    //while (Serial.available()) gsm.write(Serial.read());
     while(gsm.available()) Serial.write((char)gsm.read());
 }
 
@@ -350,6 +363,7 @@ void DeleteSMS(){
     Serial.print("Reply: "), Serial.println(CommRep);
 }
 
+
 void CheckSMS()
 {
     static String smsBuffer = "";
@@ -361,7 +375,7 @@ void CheckSMS()
         //smsBuffer = decodeUCS2(smsBuffer);
         smsBuffer.toUpperCase();
         Serial.print(smsBuffer);
-        delay(2000); 
+        //delay(2000); 
 
         if (smsBuffer.indexOf("VAPOR ON") > -1)
         {
