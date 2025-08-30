@@ -1,4 +1,4 @@
-# Temperature-and-Humidity-Monitoring-System
+# Temperature and Humidity Monitoring System
 Temperature and Humidity Monitoring System using:
 - Arduino UNO as MCU
 - I²C LCD for displaying temperature and humidity information
