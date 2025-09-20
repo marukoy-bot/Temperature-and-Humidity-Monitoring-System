@@ -14,7 +14,11 @@
 
 #define relay 5
 
-#define num "+639151635499"
+#define off false
+#define on true
+
+//#define num "+639151635499"
+#define num "+639459655924"
 
 #define o_trig_temp 30    //30°C
 #define o_trig_hmdty 60   //60%
@@ -63,11 +67,11 @@ long duration_us;
 int distance_us;
 
 unsigned long current_time = 0, last_time = 0, mode_timer_duration = 5000;
-float water_lvl;
+float water_lvl, water_lvl_percent = 0;
 
 bool isSMSCooldown = false;
 
-const unsigned long smsCooldown = 120000; // 5 min in ms
+const unsigned long smsCooldown = 300000; // 5 min in ms
 
 bool SYSTEM_PAUSE = false;
 bool manualOverride = false;
@@ -117,7 +121,7 @@ void CheckSensorValues()
             SYSTEM_PAUSE = true;
             isSMSCooldown = true;
             cooldownTimer = millis();
-            ToggleSprinkler(true);
+            ToggleSprinkler(on);
 
             String msg =
                 "[VAPOR SYSTEM ALERT]\n\nRoof: "   + String(o_temp)   + " C | " + String(o_hmdty) + "% RH\n" +
@@ -132,10 +136,10 @@ void CheckSensorValues()
     }
     else if (o_temp < 29 && !manualOverride)
     {
-        ToggleSprinkler(false);
+        ToggleSprinkler(off);
     }
 
-    if (water_lvl >= 25)
+    if (water_lvl_percent <= 20)
     {
         if (!isSMSCooldown)
         {
@@ -143,7 +147,7 @@ void CheckSensorValues()
             isSMSCooldown = true;
             cooldownTimer = millis();
 
-            String msg = "[WATER TANK STATUS]\n\nWater level is LOW (" + String(water_lvl) + "%). Please refill soon.";
+            String msg = "[WATER TANK STATUS]\n\nWater level is LOW (" + String((int)water_lvl_percent) + "%). Please refill soon.";
             SendSMS(num, msg);
             SYSTEM_PAUSE = false;
         }
@@ -159,7 +163,7 @@ void CheckSensorValues()
         else
         {
             unsigned long timeLeft = (cooldownTimerDuration - elapsed) / 1000;
-            Serial.println("SMS Cooldown: " + String(timeLeft));
+            Serial.println("SMS Cooldown: " + String(timeLeft) + "s");
         }
     }    
 }
@@ -174,7 +178,13 @@ void UpdateSensors()
         i_res = i_dht11.readTemperatureHumidity(i_temp, i_hmdty);
         o_res = o_dht11.readTemperatureHumidity(o_temp, o_hmdty);
 
-        water_lvl = GetDistance(); 
+        float dist = GetDistance(); 
+        const float empty_dist = 50.0;
+        const float full_dist = 23.0;
+
+        water_lvl_percent = ((empty_dist - dist) / (empty_dist - full_dist)) * 100.0;
+        if (water_lvl_percent > 100) water_lvl_percent = 100;
+        if (water_lvl_percent < 0) water_lvl_percent = 0;
     }    
 }
 
@@ -264,9 +274,9 @@ void DisplayWaterLevel()
 
     lcd.setCursor(0, 1);
     lcd.print((int)water_lvl);
-    lcd.print("cm   "); // spaces to overwrite old digits
+    lcd.print("%    "); // spaces to overwrite old digits
 
-    Serial.println("Water Level: " + (String)water_lvl + "cm");
+    Serial.println("Water Level: " + (String)water_lvl + "%");
 }
 
 float GetDistance()
