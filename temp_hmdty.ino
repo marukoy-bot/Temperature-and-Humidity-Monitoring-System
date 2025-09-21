@@ -17,9 +17,6 @@
 #define off false
 #define on true
 
-//#define num "+639151635499"
-#define num "+639459655924"
-
 #define o_trig_temp 30    //30°C
 #define o_trig_hmdty 60   //60%
 #define water_lvl_trig 100 
@@ -33,7 +30,12 @@ DHT11 i_dht11(6);
 
 SoftwareSerial gsm(RX, TX);
 
+//String num = "+639151635499";
+String num = "+639459655924";
+
 void setup() {
+    Serial.begin(9600);
+    Serial.println("Initializing...");
     lcd.init();
     lcd.backlight();
     lcd.clear();
@@ -42,7 +44,6 @@ void setup() {
 
     InitializeGSM();
 
-    Serial.begin(9600);
 
     pinMode(trig, OUTPUT);
     pinMode(echo, INPUT_PULLUP);
@@ -111,7 +112,7 @@ void loop() {
     else {}
 }
 
-unsigned long cooldownTimer = 0, cooldownTimerDuration = 120000;
+unsigned long cooldownTimer = 0, cooldownTimerDuration = 300000;
 void CheckSensorValues()
 {
     if (o_temp >= 30)
@@ -179,13 +180,17 @@ void UpdateSensors()
         o_res = o_dht11.readTemperatureHumidity(o_temp, o_hmdty);
 
         float dist = GetDistance(); 
-        const float empty_dist = 50.0;
-        const float full_dist = 23.0;
+        const float empty_dist = 40.0;
+        const float full_dist = 20.0;
 
         water_lvl_percent = ((empty_dist - dist) / (empty_dist - full_dist)) * 100.0;
         if (water_lvl_percent > 100) water_lvl_percent = 100;
         if (water_lvl_percent < 0) water_lvl_percent = 0;
     }    
+
+    //print on serial monitor
+    Serial.print("Indoor: " + String(i_temp) + " °C, " + String(i_hmdty) + "% RH | Roof: " + String(o_temp) + " °C, " + String(o_hmdty) + "% RH | "); 
+    Serial.println("Water level: " + String(water_lvl_percent) + "%");
 }
 
 String toUCS2(String text) {
@@ -245,13 +250,7 @@ void InitializeGSM()
 void DisplayTemperatureAndHumidity(int setting) // 1 = indoor; 0 = roof
 {    
     if (i_res == 0 || o_res == 0) 
-    {
-        //print on serial monitor
-        Serial.print(setting ? "Indoor: " : "Roof: ");
-        Serial.print(setting ? i_temp : o_temp);
-        Serial.print(" °C | ");
-        Serial.print(setting ? i_hmdty : o_hmdty);
-        Serial.println("% RH");
+    {       
 
         //print on LCD
         lcd.setCursor(0, 0);
@@ -273,10 +272,10 @@ void DisplayWaterLevel()
     lcd.print("Water Level:   "); // add spaces to clear old chars
 
     lcd.setCursor(0, 1);
-    lcd.print((int)water_lvl);
+    lcd.print((int)water_lvl_percent);
     lcd.print("%    "); // spaces to overwrite old digits
 
-    Serial.println("Water Level: " + (String)water_lvl + "%");
+    //Serial.println("Water Level: " + (String)water_lvl + "%"); 
 }
 
 float GetDistance()
@@ -413,7 +412,7 @@ void CheckSMS()
             String msg =
                 "[VAPOR SYSTEM ALERT]\n\nRoof: "   + String(o_temp)   + " C | " + String(o_hmdty) + "% RH\n" +
                 "Indoor: " + String(i_temp)   + " C | " + String(i_hmdty) + "% RH\n" +
-                "Water Level: "  + String((int)water_lvl) + "%\n" +
+                "Water Level: "  + String((int)water_lvl_percent) + "%\n" +
                 "Status: SPRINKLER "   + String(is_sprinkler_active ? "ON" : "OFF");
 
             SendSMS(num, msg);
