@@ -4,14 +4,15 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 #include <LiquidCrystal_I2C.h>
-#include <DHT11.h>
+#include <DHT.h>
 #include <config.h>
+#include <SD.h>
 
-#define trig 12
-#define echo 11
-#define RX 3
-#define TX 4
-#define relay 5
+#define trig 14
+#define echo 27
+#define GSM_RX 32
+#define GSM_TX 33
+#define relay 25
 #define off false
 #define on true
 #define o_trig_temp 30    //30°C
@@ -19,12 +20,13 @@
 #define water_lvl_trig 100 
 #define scroll_delay 500
 
+#define o_dht11 17
+#define i_dht11 16
+
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-DHT11 o_dht11(2);
-DHT11 i_dht11(6);
-
-SoftwareSerial gsm(RX, TX);
+DHT o_dht11_sensor(o_dht11, DHT11);
+DHT i_dht11_sensor(i_dht11, DHT11);
+SoftwareSerial gsm(GSM_RX, GSM_TX);
 
 void InitializeGSM();
 void CheckSMS();    
@@ -38,6 +40,27 @@ void DeleteSMS();
 void CheckSMS();
 void SendSMS(String number, String message);
 float GetDistance();
+int getDaysInMonth(int month, int year);
+bool parseDateTime(String cclk);
+String getCurrentDateTime();
+bool getDateTimeOnce();
+void incrementDateTime();
+
+//SD
+void initSD();
+void SDLog();
+File logFile;
+
+// time
+String currentDateTime = "";
+unsigned long lastDateTimeMillis = 0;
+int dt_year = 2025;
+int dt_month = 1;
+int dt_day = 1;
+int dt_hour = 0;
+int dt_minute = 0;
+int dt_second = 0;
+bool dateTimeInitialized = false;
 
 void setup() {
     Serial.begin(115200);
@@ -48,7 +71,10 @@ void setup() {
     lcd.setCursor(0, 0);
     lcd.print("Initializing GSM");
 
+    o_dht11_sensor.begin();
+    i_dht11_sensor.begin();
     InitializeGSM();
+    initSD();
 
     pinMode(trig, OUTPUT);
     pinMode(echo, INPUT_PULLUP);
@@ -56,12 +82,22 @@ void setup() {
     pinMode(relay, OUTPUT);
     digitalWrite(relay, HIGH);
 
+    if (getDateTimeOnce()) {
+        lastDateTimeMillis = millis();
+        dateTimeInitialized = true;
+        currentDateTime = getCurrentDateTime();
+        Serial.println("DateTime initialized [" + currentDateTime + "]");
+    }
+    else {
+        Serial.println("Failed to get DateTime from GSM.");
+    }
+
     lcd.clear();
 }
 
 int display_mode = 0; //default
-int i_temp = 0, i_hmdty = 0;
-int o_temp = 0, o_hmdty = 0;
+float i_temp = 0, i_hmdty = 0;
+float o_temp = 0, o_hmdty = 0;
 unsigned long sprinkler_timer = 0;
 bool is_sprinkler_active = false;
 const unsigned long sprinkler_timer_dur = 5000;
@@ -79,6 +115,10 @@ unsigned long sensor_last_time = 0;
 void loop() {
     current_time = millis();
 
+    if (dateTimeInitialized) {
+        incrementDateTime();
+    }
+
     if (current_time - sensor_last_time > 1000) {
         sensor_last_time = current_time;
         UpdateSensors();
@@ -91,10 +131,11 @@ void loop() {
     {
         if (current_time - last_time > mode_timer_duration) //cycle though display modes
         {
+            last_time = current_time;
+            SDLog();
             lcd.clear();
             display_mode++;
             if (display_mode > 2) display_mode = 0;
-            last_time = current_time;
         }
 
         switch(display_mode)
@@ -116,7 +157,7 @@ unsigned long cooldownTimer = 0, cooldownTimerDuration = 300000;
 void CheckSensorValues()
 {
     if (!manualOverride) {
-        if (o_temp >= 30 && o_hmdty <= 70) {
+        if (o_temp >= 32 && o_hmdty <= 70) {
             ToggleSprinkler(on);            
             if (!isSMSCooldown)
             {
@@ -136,7 +177,7 @@ void CheckSensorValues()
                 SYSTEM_PAUSE = false;
             }
         }
-        else if (o_temp <= 25 || o_hmdty >= 75) {
+        else if (i_temp <= 30 || i_hmdty >= 70) {
             ToggleSprinkler(off);
         }
     }
@@ -172,8 +213,12 @@ void CheckSensorValues()
 
 void UpdateSensors()
 {
-    i_res = i_dht11.readTemperatureHumidity(i_temp, i_hmdty);
-    o_res = o_dht11.readTemperatureHumidity(o_temp, o_hmdty);
+    // i_res = i_dht11.readTemperatureHumidity(i_temp, i_hmdty);
+    // o_res = o_dht11.readTemperatureHumidity(o_temp, o_hmdty);
+    i_temp = i_dht11_sensor.readTemperature();
+    i_hmdty = i_dht11_sensor.readHumidity();
+    o_temp = o_dht11_sensor.readTemperature();
+    o_hmdty = o_dht11_sensor.readHumidity();
 
     float dist = GetDistance();
 
@@ -189,35 +234,6 @@ void UpdateSensors()
     Serial.print("Indoor: " + String(i_temp) + " °C, " + String(i_hmdty) + "% RH | Roof: " + 
                  String(o_temp) + " °C, " + String(o_hmdty) + "% RH | "); 
     Serial.println("Water level: " + String(water_lvl_percent) + "% (raw: " + dist + " cm)");
-}
-
-String toUCS2(String text) {
-    String out = "";
-    for (unsigned int i = 0; i < text.length(); i++) {
-        char c = text[i];
-        unsigned int code;
-
-        if ((unsigned char)c == 0xB0) {
-            code = 0x00B0;  // degree symbol
-        } else {
-            code = (unsigned char)c;  // normal ASCII
-        }
-
-        char buf[5];
-        sprintf(buf, "%04X", code);
-        out += buf;
-    }
-    return out;
-}
-
-String decodeUCS2(String hex) {
-    String result = "";
-    for (unsigned int i = 0; i < hex.length(); i += 4) {
-        String part = hex.substring(i, i + 4);
-        char c = (char) strtol(part.c_str(), NULL, 16);
-        result += c;
-    }
-    return result;
 }
 
 void InitializeGSM()
@@ -247,21 +263,20 @@ void InitializeGSM()
 
 void DisplayTemperatureAndHumidity(int setting) // 1 = indoor; 0 = roof
 {    
-    if (i_res == 0 || o_res == 0) 
-    {       
-
+    if (isnan(o_temp) || isnan(o_hmdty) || isnan(i_temp) || isnan(i_hmdty)) 
+    {                
+        Serial.println("Failed to read from DHT sensor!");
+        lcd.setCursor(0, 0);
+        lcd.clear();
+        lcd.print("DHT Error");
+    }
+    else {       
         //print on LCD
         lcd.setCursor(0, 0);
         lcd.print(setting ? "Indoor: " : "Roof: ");
-        
         lcd.setCursor(0, 1);
         lcd.print(String(setting ? i_temp : o_temp) + (char)223 + "C | " + String(setting ? i_hmdty : o_hmdty) + "% RH");
-    } 
-    else 
-    {
-        //print error message based on the error code.
-        lcd.print(DHT11::getErrorString(i_res));
-    }    
+    }  
 }
 
 void DisplayWaterLevel()
@@ -315,18 +330,6 @@ void UpdateGSM()
 {
     //while (Serial.available()) gsm.write(Serial.read());
     while(gsm.available()) Serial.write((char)gsm.read());
-}
-
-String GetDateTime()
-{
-    String dateTime = "";
-    gsm.println("AT+CCLK?");
-    delay(500);
-
-    while(gsm.available()) dateTime += (char)gsm.read();
-    dateTime.trim();
-
-    return dateTime;
 }
 
 String FormatTime(String cclk)
@@ -423,3 +426,233 @@ void CheckSMS()
         }            
     }
 }
+
+void initSD() {
+    // For ESP32, specify the CS pin (usually GPIO 5)
+    // Adjust the pin number based on your wiring
+    if (!SD.begin(5)) {  // Change 5 to your actual CS pin
+        Serial.println("ERROR: SD Card initialization failed!");
+        Serial.println("Check: 1) SD card inserted, 2) Wiring, 3) CS pin number");
+        return;
+    }
+    
+    uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+        Serial.println("ERROR: No SD card attached");
+        return;
+    }
+    
+    Serial.println("SUCCESS: SD Card initialized");
+    Serial.print("SD Card Type: ");
+    if (cardType == CARD_MMC) {
+        Serial.println("MMC");
+    } else if (cardType == CARD_SD) {
+        Serial.println("SDSC");
+    } else if (cardType == CARD_SDHC) {
+        Serial.println("SDHC");
+    } else {
+        Serial.println("UNKNOWN");
+    }
+    
+    uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+    Serial.printf("SD Card Size: %lluMB\n", cardSize);
+}
+
+void SDLog() {
+    String timeStamp = getCurrentDateTime();
+
+    // ESP32 requires "/" prefix for file paths
+    if (!SD.exists("/logs.txt")) {
+        logFile = SD.open("/logs.txt", FILE_WRITE);
+        if (logFile) {
+            logFile.println("===== VAPOR SYSTEM LOG FILE =====");
+            logFile.println("Created: " + timeStamp);
+            logFile.println("====================================");
+            logFile.close();
+        }
+        else {
+            Serial.println("ERROR: Failed to create /logs.txt");
+            return;
+        }
+    }
+
+    logFile = SD.open("/logs.txt", FILE_APPEND);
+    if (logFile) {
+        logFile.print("[" + timeStamp + "]");
+        logFile.print(" Indoor: " + String(i_temp) + "°C, " + String(i_hmdty) + "% RH");
+        logFile.print(" | Roof: " + String(o_temp) + "°C, " + String(o_hmdty) + "% RH");
+        logFile.print(" | Water level: " + String((int)water_lvl_percent) + "%");
+        logFile.println(" | Sprinkler: " + String(is_sprinkler_active ? "ON" : "OFF"));
+        logFile.close();
+        Serial.println("Logged [" + timeStamp + "]");
+    } else {
+        Serial.println("ERROR: Failed to open /logs.txt for writing");
+    }
+}
+
+bool getDateTimeOnce() {
+    while (gsm.available()) gsm.read(); // Clear buffer
+
+    gsm.println("AT+CCLK?");
+    delay(1000); // Increased delay for ESP32
+
+    String response = "";
+    unsigned long timeout = millis();
+    
+    // Read response with timeout
+    while (millis() - timeout < 2000) {
+        if (gsm.available()) {
+            response += (char)gsm.read();
+        }
+    }
+
+    Serial.println("GSM Response: [" + response + "]");
+    response.trim();
+
+    // Look for +CCLK: "25/10/21,18:52:24+32"
+    int startIndex = response.indexOf("+CCLK: \"");
+    if (startIndex == -1) {
+        Serial.println("ERROR: Could not find '+CCLK: \"'");
+        return false;
+    }
+
+    startIndex += 8; // Move past '+CCLK: "' to point at the '2' in '25'
+    
+    // Find the closing quote starting from startIndex
+    int endIndex = response.indexOf("\"", startIndex);
+    if (endIndex == -1) {
+        Serial.println("ERROR: Could not find closing quote");
+        return false;
+    }
+
+    // Extract the time string between the quotes
+    String timeString = response.substring(startIndex, endIndex);
+    Serial.println("Extracted time: [" + timeString + "]");
+    
+    bool success = parseDateTime(timeString);
+    if (success) {
+        Serial.println("Parsed successfully!");
+        Serial.println("Date: " + String(dt_year) + "/" + String(dt_month) + "/" + String(dt_day));
+        Serial.println("Time: " + String(dt_hour) + ":" + String(dt_minute) + ":" + String(dt_second));
+    } else {
+        Serial.println("ERROR: Failed to parse datetime");
+    }
+    
+    return success;
+}
+
+bool parseDateTime(String cclk) {
+    Serial.println("Parsing: [" + cclk + "] Length: " + String(cclk.length()));
+    
+    if (cclk.length() < 17) {
+        Serial.println("ERROR: String too short (need at least 17 chars)");
+        return false;
+    }
+
+    // Format: "25/10/21,18:52:24+32"
+    //          01234567890123456789
+    
+    dt_year   = 2000 + cclk.substring(0, 2).toInt();
+    dt_month  = cclk.substring(3, 5).toInt();
+    dt_day    = cclk.substring(6, 8).toInt();
+    dt_hour   = cclk.substring(9, 11).toInt();
+    dt_minute = cclk.substring(12, 14).toInt();
+    dt_second = cclk.substring(15, 17).toInt();
+
+    // Validate parsed values
+    if (dt_month < 1 || dt_month > 12) {
+        Serial.println("ERROR: Invalid month: " + String(dt_month));
+        return false;
+    }
+    if (dt_day < 1 || dt_day > 31) {
+        Serial.println("ERROR: Invalid day: " + String(dt_day));
+        return false;
+    }
+    if (dt_hour < 0 || dt_hour > 23) {
+        Serial.println("ERROR: Invalid hour: " + String(dt_hour));
+        return false;
+    }
+    if (dt_minute < 0 || dt_minute > 59) {
+        Serial.println("ERROR: Invalid minute: " + String(dt_minute));
+        return false;
+    }
+    if (dt_second < 0 || dt_second > 59) {
+        Serial.println("ERROR: Invalid second: " + String(dt_second));
+        return false;
+    }
+
+    return true;
+}
+
+// Increment DateTime based on millis()
+void incrementDateTime() {
+    unsigned long currentMillis = millis();
+    unsigned long elapsed = currentMillis - lastDateTimeMillis;
+
+    if (elapsed >= 1000) {
+        // Calculate how many seconds passed (handle overflow)
+        int secondsPassed = elapsed / 1000;
+        lastDateTimeMillis += (secondsPassed * 1000);
+
+        dt_second += secondsPassed;
+
+        // Handle seconds overflow
+        if (dt_second >= 60) {
+            dt_minute += dt_second / 60;
+            dt_second = dt_second % 60;
+        }
+
+        // Handle minutes overflow
+        if (dt_minute >= 60) {
+            dt_hour += dt_minute / 60;
+            dt_minute = dt_minute % 60;
+        }
+
+        // Handle hours overflow
+        if (dt_hour >= 24) {
+            dt_day += dt_hour / 24;
+            dt_hour = dt_hour % 24;
+        }
+
+        // Handle day overflow (simplified - doesn't account for different month lengths)
+        int daysInMonth = getDaysInMonth(dt_month, dt_year);
+        if (dt_day > daysInMonth) {
+            dt_day = 1;
+            dt_month++;
+        }
+
+        // Handle month overflow
+        if (dt_month > 12) {
+            dt_month = 1;
+            dt_year++;
+        }
+    }
+}
+
+// Helper function to get days in month
+int getDaysInMonth(int month, int year) {
+    switch(month) {
+        case 1: case 3: case 5: case 7: case 8: case 10: case 12:
+            return 31;
+        case 4: case 6: case 9: case 11:
+            return 30;
+        case 2:
+            // Leap year check
+            if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))
+                return 29;
+            else
+                return 28;
+        default:
+            return 30;
+    }
+}
+
+// Get current DateTime as formatted string
+String getCurrentDateTime() {
+    char buf[25];
+    sprintf(buf, "%02d/%02d/%04d, %02d:%02d:%02d", 
+            dt_month, dt_day, dt_year, dt_hour, dt_minute, dt_second);
+    return String(buf);
+}
+
+
