@@ -1,6 +1,6 @@
-//Arduino UNO
-//SCL   A5
-//SDA   A4
+// ESP32
+// SCL   22
+// SDA   21
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 #include <LiquidCrystal_I2C.h>
