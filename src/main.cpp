@@ -1,6 +1,12 @@
-// ESP32
+// IIC LCD
 // SCL   22
 // SDA   21
+
+// SD Card
+// SCK  18
+// MOSI 23
+// MISO 19
+// NSS  5
 #include <Arduino.h>
 #include <SoftwareSerial.h>
 #include <LiquidCrystal_I2C.h>
@@ -110,7 +116,8 @@ bool isSMSCooldown = false;
 const unsigned long smsCooldown = 300000; // 5 min in ms
 bool SYSTEM_PAUSE = false;
 bool manualOverride = false;
-unsigned long sensor_last_time = 0;
+unsigned long sensor_last_time = 0, manual_override_start_time = 0;
+const unsigned long manualOverrideDuration = 60000; // 1 min
 
 void loop() {
     current_time = millis();
@@ -123,6 +130,18 @@ void loop() {
         sensor_last_time = current_time;
         UpdateSensors();
         CheckSensorValues();
+    }
+
+    // Check if manual override should be released
+    if (manualOverride) {
+        unsigned long elapsed = current_time - manual_override_start_time;
+        if (elapsed >= manualOverrideDuration) {
+            manualOverride = false;
+            Serial.println("Manual override released - system control restored.");
+        } else {
+            unsigned long timeLeft = (manualOverrideDuration - elapsed) / 1000;
+            Serial.println("Manual Override Active: " + String(timeLeft) + "s remaining");
+        }
     }
 
     CheckSMS();    
@@ -390,20 +409,28 @@ void CheckSMS()
         if (smsBuffer.indexOf("VAPOR ON") > -1)
         {
             manualOverride = true;  // force ON
+            manual_override_start_time = millis(); // Start override timer
             ToggleSprinkler(true);
             lcd.clear();
             lcd.setCursor(0, 0);
             lcd.print("SPRINKLER: ON");
+            lcd.setCursor(0, 1);
+            lcd.print("Manual Override");
+            Serial.println("Manual override activated - SPRINKLER ON for 30s");
             delay(3000);
             lcd.clear();
         }
         else if (smsBuffer.indexOf("VAPOR OFF") > -1 )
         {
-            manualOverride = false; // release override
+            manualOverride = true;
+            manual_override_start_time = millis(); // Start override timer
             ToggleSprinkler(false);
             lcd.clear();
             lcd.setCursor(0, 0);
             lcd.print("SPRINKLER: OFF");
+            lcd.setCursor(0, 1);
+            lcd.print("Manual Override");
+            Serial.println("Manual override activated - SPRINKLER OFF for 30s");
             delay(3000);
             lcd.clear();
         }
@@ -654,5 +681,3 @@ String getCurrentDateTime() {
             dt_month, dt_day, dt_year, dt_hour, dt_minute, dt_second);
     return String(buf);
 }
-
-
